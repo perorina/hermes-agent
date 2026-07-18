@@ -56,3 +56,13 @@ class TaskEvent:
     actor: str
     detail: Optional[str]
     created_at: str
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    id: int
+    task_id: Optional[int]
+    actor: str
+    action: str
+    detail: Optional[str]
+    created_at: str

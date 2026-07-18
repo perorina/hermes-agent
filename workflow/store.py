@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
-from workflow.models import Project, TaskEvent, TaskState, WorkflowTask
+from workflow.models import AuditRecord, Project, TaskEvent, TaskState, WorkflowTask
 
 
 class InvalidTaskTransition(ValueError):
@@ -176,6 +176,15 @@ class WorkflowStore:
                     delivery_id TEXT PRIMARY KEY,
                     event_name TEXT NOT NULL,
                     received_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id INTEGER REFERENCES tasks(id),
+                    actor TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    detail TEXT,
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -552,6 +561,43 @@ class WorkflowStore:
                 "INSERT INTO handoffs (task_id, content, created_at) VALUES (?, ?, ?)",
                 (task_id, content, _utc_now()),
             )
+
+    def record_audit(
+        self,
+        task_id: Optional[int],
+        actor: str,
+        action: str,
+        detail: Optional[str] = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_log (task_id, actor, action, detail, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (task_id, actor, action, detail, _utc_now()),
+            )
+
+    def list_audit(self, task_id: Optional[int] = None) -> list[AuditRecord]:
+        with self._connect() as conn:
+            if task_id is None:
+                rows = conn.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id",
+                    (task_id,),
+                ).fetchall()
+        return [
+            AuditRecord(
+                id=int(row["id"]),
+                task_id=int(row["task_id"]) if row["task_id"] is not None else None,
+                actor=row["actor"],
+                action=row["action"],
+                detail=row["detail"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     def latest_handoff(self, task_id: int) -> Optional[str]:
         with self._connect() as conn:
