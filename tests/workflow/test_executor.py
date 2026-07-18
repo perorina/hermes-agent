@@ -99,6 +99,45 @@ async def test_prepare_creates_branch_from_latest_remote_default(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_prepare_repair_recreates_worktree_from_remote_agent_branch(
+    tmp_path: Path,
+) -> None:
+    _, task, node, executor = _setup(tmp_path)
+    node.results = [CommandResult(0, "", "") for _ in range(4)]
+
+    workspace = await executor.prepare_repair(task)
+
+    assert workspace == PurePosixPath("/worktrees/1-health-check")
+    assert [call[0] for call in node.calls[1:]] == [
+        [
+            "git",
+            "-C",
+            "/repos/demo",
+            "fetch",
+            "origin",
+            "agent/hermes/1-health-check",
+        ],
+        [
+            "git",
+            "-C",
+            "/repos/demo",
+            "branch",
+            "--force",
+            "agent/hermes/1-health-check",
+            "origin/agent/hermes/1-health-check",
+        ],
+        [
+            "git",
+            "-C",
+            "/repos/demo",
+            "worktree",
+            "add",
+            "/worktrees/1-health-check",
+            "agent/hermes/1-health-check",
+        ],
+    ]
+
+@pytest.mark.asyncio
 async def test_claude_question_is_logged_and_pauses_task(tmp_path: Path) -> None:
     store, task, node, executor = _setup(tmp_path)
     node.results = [

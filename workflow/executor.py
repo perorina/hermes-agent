@@ -94,6 +94,48 @@ class TaskExecutor:
         self._require_ok(created, "create task worktree")
         return workspace
 
+    async def prepare_repair(self, task: WorkflowTask) -> PurePath:
+        primary = self._primary_clone()
+        status = await self.node.run(
+            ["git", "-C", str(primary), "status", "--porcelain"], timeout=30.0
+        )
+        self._require_ok(status, "inspect primary clone")
+        if status.stdout.strip():
+            raise DirtyRepositoryError("primary clone is dirty; repair was not started")
+        fetched = await self.node.run(
+            ["git", "-C", str(primary), "fetch", "origin", task.branch],
+            timeout=120.0,
+        )
+        self._require_ok(fetched, "fetch agent branch")
+        updated = await self.node.run(
+            [
+                "git",
+                "-C",
+                str(primary),
+                "branch",
+                "--force",
+                task.branch,
+                f"origin/{task.branch}",
+            ],
+            timeout=30.0,
+        )
+        self._require_ok(updated, "update local agent branch")
+        workspace = self.worktree_root / task.branch.removeprefix("agent/hermes/")
+        created = await self.node.run(
+            [
+                "git",
+                "-C",
+                str(primary),
+                "worktree",
+                "add",
+                str(workspace),
+                task.branch,
+            ],
+            timeout=120.0,
+        )
+        self._require_ok(created, "recreate repair worktree")
+        return workspace
+
     async def run_claude(
         self, task: WorkflowTask, workspace: PurePath
     ) -> ClaudeResult:

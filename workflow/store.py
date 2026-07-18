@@ -122,6 +122,7 @@ class WorkflowStore:
                     branch TEXT NOT NULL UNIQUE,
                     state TEXT NOT NULL,
                     queue_position INTEGER,
+                    repair_attempts INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -161,8 +162,30 @@ class WorkflowStore:
                     path TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS pull_requests (
+                    task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+                    repository TEXT NOT NULL,
+                    number INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(repository, number)
+                );
+
+                CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                    delivery_id TEXT PRIMARY KEY,
+                    event_name TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                );
                 """
             )
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if "repair_attempts" not in columns:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN repair_attempts INTEGER NOT NULL DEFAULT 0"
+                )
 
     def save_project(self, project: Project) -> None:
         with self._connect() as conn:
@@ -192,6 +215,24 @@ class WorkflowStore:
                     project.minimum_free_disk_gb,
                 ),
             )
+
+    def get_project(self, project_id: str) -> Project:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(project_id)
+        return Project(
+            id=row["id"],
+            name_with_owner=row["name_with_owner"],
+            default_branch=row["default_branch"],
+            preferred_node=row["preferred_node"],
+            fallback_node=row["fallback_node"],
+            production=bool(row["production"]),
+            retry_limit=int(row["retry_limit"]),
+            minimum_free_disk_gb=int(row["minimum_free_disk_gb"]),
+        )
 
     def create_task(
         self,
@@ -397,6 +438,31 @@ class WorkflowStore:
             ).fetchall()
         return [self._task_from_row(row) for row in rows]
 
+    def requeue_task(self, task_id: int, actor: str, detail: str) -> WorkflowTask:
+        with self._transaction() as conn:
+            row = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            current = TaskState(row["state"])
+            self._validate_transition(current, TaskState.QUEUED)
+            queue_position = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(queue_position), 0) + 1 FROM tasks"
+                ).fetchone()[0]
+            )
+            now = _utc_now()
+            conn.execute(
+                """
+                UPDATE tasks SET state = ?, queue_position = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (TaskState.QUEUED.value, queue_position, now, task_id),
+            )
+            self._insert_event(
+                conn, task_id, current, TaskState.QUEUED, actor, detail, now
+            )
+        return self.get_task(task_id)
+
     def acquire_project_lock(self, project_id: str, task_id: int) -> bool:
         try:
             with self._transaction() as conn:
@@ -494,6 +560,82 @@ class WorkflowStore:
                 (task_id,),
             ).fetchone()
         return row["content"] if row else None
+
+    def record_pull_request(
+        self, task_id: int, repository: str, number: int, url: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pull_requests (task_id, repository, number, url, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    repository = excluded.repository,
+                    number = excluded.number,
+                    url = excluded.url
+                """,
+                (task_id, repository, number, url, _utc_now()),
+            )
+
+    def record_webhook_delivery(self, delivery_id: str, event_name: str) -> bool:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO webhook_deliveries (delivery_id, event_name, received_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (delivery_id, event_name, _utc_now()),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def has_webhook_delivery(self, delivery_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM webhook_deliveries WHERE delivery_id = ?",
+                (delivery_id,),
+            ).fetchone()
+        return row is not None
+
+    def find_task_by_repository_branch(
+        self, repository: str, branch: str
+    ) -> Optional[WorkflowTask]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT tasks.* FROM tasks
+                JOIN projects ON projects.id = tasks.project_id
+                WHERE projects.name_with_owner = ? AND tasks.branch = ?
+                ORDER BY tasks.id DESC LIMIT 1
+                """,
+                (repository, branch),
+            ).fetchone()
+        return self._task_from_row(row) if row else None
+
+    def increment_repair_attempt(self, task_id: int) -> int:
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT repair_attempts FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            attempts = int(row["repair_attempts"]) + 1
+            conn.execute(
+                "UPDATE tasks SET repair_attempts = ?, updated_at = ? WHERE id = ?",
+                (attempts, _utc_now(), task_id),
+            )
+        return attempts
+
+    def repair_attempts(self, task_id: int) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT repair_attempts FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        return int(row["repair_attempts"])
 
     def record_raw_log(
         self,
