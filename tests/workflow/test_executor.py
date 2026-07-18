@@ -202,3 +202,27 @@ async def test_cancel_requires_confirmation_when_branch_has_commits(tmp_path: Pa
         await executor.cancel(task, PurePosixPath("/worktrees/1-health-check"))
 
     assert len(node.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_worktree_after_pr_preserves_agent_branch(tmp_path: Path) -> None:
+    _, task, node, executor = _setup(tmp_path)
+    node.results = [CommandResult(0, "", "")]
+
+    await executor.remove_worktree(
+        task, PurePosixPath("/worktrees/1-health-check")
+    )
+
+    assert node.calls == [
+        (
+            [
+                "git",
+                "-C",
+                "/repos/demo",
+                "worktree",
+                "remove",
+                "/worktrees/1-health-check",
+            ],
+            120.0,
+        )
+    ]

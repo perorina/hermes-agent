@@ -54,16 +54,33 @@ class SSHNode:
         ssh_target: str,
         transport: Transport = _subprocess_transport,
         ide_processes: Sequence[str] = ("Code", "Cursor"),
+        identity_file: Optional[str] = None,
+        known_hosts_file: Optional[str] = None,
     ):
         self.id = node_id
         self.ssh_target = ssh_target
         self._transport = transport
         self.ide_processes = tuple(ide_processes)
+        self.identity_file = identity_file
+        self.known_hosts_file = known_hosts_file
 
     async def run(
         self, argv: Sequence[str], timeout: float = 60.0
     ) -> CommandResult:
         raise NotImplementedError
+
+    def _ssh_argv(self) -> list[str]:
+        argv = ["ssh"]
+        if self.identity_file or self.known_hosts_file:
+            argv.extend(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"])
+            if self.known_hosts_file:
+                argv.extend(
+                    ["-o", f"UserKnownHostsFile={self.known_hosts_file}"]
+                )
+            if self.identity_file:
+                argv.extend(["-i", self.identity_file])
+        argv.extend([self.ssh_target, "--"])
+        return argv
 
     @staticmethod
     def _readiness_from_result(
@@ -127,9 +144,7 @@ class LinuxNode(SSHNode):
         if not argv:
             raise ValueError("remote argv cannot be empty")
         remote_command = shlex.join([str(item) for item in argv])
-        return await self._transport(
-            ["ssh", self.ssh_target, "--", remote_command], timeout
-        )
+        return await self._transport([*self._ssh_argv(), remote_command], timeout)
 
     async def run_in(
         self, cwd: str, argv: Sequence[str], timeout: float = 60.0
@@ -199,9 +214,7 @@ class WindowsNode(SSHNode):
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         return await self._transport(
             [
-                "ssh",
-                self.ssh_target,
-                "--",
+                *self._ssh_argv(),
                 "powershell.exe",
                 "-NoProfile",
                 "-NonInteractive",

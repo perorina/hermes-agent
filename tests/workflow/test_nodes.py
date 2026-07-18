@@ -26,6 +26,38 @@ async def test_linux_ssh_quotes_each_remote_argument() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ssh_uses_explicit_identity_and_strict_known_hosts() -> None:
+    calls = []
+
+    async def transport(argv, timeout):
+        calls.append(argv)
+        return CommandResult(0, "", "")
+
+    node = LinuxNode(
+        "vps",
+        "user@vps.tailnet",
+        transport=transport,
+        identity_file="/opt/data/ssh/workflow_ed25519",
+        known_hosts_file="/opt/data/ssh/workflow_known_hosts",
+    )
+    await node.run(["true"])
+
+    assert calls[0][:11] == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "UserKnownHostsFile=/opt/data/ssh/workflow_known_hosts",
+        "-i",
+        "/opt/data/ssh/workflow_ed25519",
+        "user@vps.tailnet",
+        "--",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_windows_ssh_uses_encoded_powershell_not_raw_input() -> None:
     calls = []
 

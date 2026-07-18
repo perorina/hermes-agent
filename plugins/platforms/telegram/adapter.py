@@ -2879,6 +2879,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        workflow_service = getattr(getattr(self, "_workflow", None), "service", None)
+        if workflow_service is not None:
+            try:
+                await workflow_service.stop()
+            except Exception:
+                logger.exception("[Telegram] Failed to stop repository workflow")
         # Cancel the heartbeat before tearing down the app so the probe task
         # cannot fire get_me() into a half-shutdown bot client.
         if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():

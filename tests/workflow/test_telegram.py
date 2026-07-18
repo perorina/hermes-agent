@@ -158,6 +158,48 @@ async def test_approval_queues_task_and_normal_text_falls_through(workflow) -> N
 
 
 @pytest.mark.asyncio
+async def test_approval_starts_workflow_service(workflow) -> None:
+    controller, _ = workflow
+    service = SimpleNamespace(start=MagicMock())
+    controller.service = service
+    await controller.handle_command(_message_update("/workflow"))
+    await controller.handle_callback(_callback_update("wf:repo:0"))
+    await controller.handle_text(_message_update("Perbarui README"))
+
+    await controller.handle_callback(_callback_update("wf:approve:1"))
+
+    service.start.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_pr_and_answer_callbacks_delegate_to_service(workflow) -> None:
+    controller, _ = workflow
+    service = SimpleNamespace(
+        create_pr=AsyncMock(),
+        answer=AsyncMock(),
+    )
+    controller.service = service
+    await controller.handle_command(_message_update("/workflow"))
+    await controller.handle_callback(_callback_update("wf:repo:0"))
+    await controller.handle_text(_message_update("Perbarui README"))
+    controller.store.approve_task(1, actor="owner")
+    for state in (
+        TaskState.PREPARING,
+        TaskState.RUNNING,
+        TaskState.TESTING,
+        TaskState.PUSHED,
+    ):
+        controller.store.transition_task(1, state, actor="test")
+
+    await controller.handle_callback(_callback_update("wf:pr:1"))
+    await controller.handle_callback(_callback_update("wf:answer:1"))
+    await controller.handle_text(_message_update("Gunakan endpoint /healthz"))
+
+    service.create_pr.assert_awaited_once_with(1)
+    service.answer.assert_awaited_once_with(1, "Gunakan endpoint /healthz")
+
+
+@pytest.mark.asyncio
 async def test_adapter_stops_normal_command_dispatch_when_workflow_consumes() -> None:
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter._workflow = SimpleNamespace(handle_command=AsyncMock(return_value=True))
@@ -170,3 +212,14 @@ async def test_adapter_stops_normal_command_dispatch_when_workflow_consumes() ->
 
     adapter._workflow.handle_command.assert_awaited_once()
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_stops_workflow_runner_on_disconnect() -> None:
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    service = SimpleNamespace(stop=AsyncMock())
+    adapter._workflow = SimpleNamespace(service=service)
+
+    await adapter.disconnect()
+
+    service.stop.assert_awaited_once_with()

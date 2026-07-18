@@ -279,6 +279,16 @@ class TaskExecutor:
                 timeout=120.0,
             )
 
+    async def remove_worktree(
+        self, task: WorkflowTask, workspace: PurePath
+    ) -> None:
+        primary = self._primary_clone()
+        removed = await self.node.run(
+            ["git", "-C", str(primary), "worktree", "remove", str(workspace)],
+            timeout=120.0,
+        )
+        self._require_ok(removed, "remove task worktree after PR creation")
+
     async def _invoke_claude(
         self,
         task: WorkflowTask,

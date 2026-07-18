@@ -32,6 +32,7 @@ class TelegramWorkflow:
         bot_getter: Callable[[], Any],
         button_factory: Callable[..., Any] = InlineKeyboardButton,
         markup_factory: Callable[..., Any] = InlineKeyboardMarkup,
+        service: Any = None,
     ):
         self.config = config
         self.store = store
@@ -40,6 +41,7 @@ class TelegramWorkflow:
         self._bot_getter = bot_getter
         self._button = button_factory
         self._markup = markup_factory
+        self.service = service
         self._conversations: dict[int, _Conversation] = {}
         for project in config.projects.values():
             self._save_project(project)
@@ -52,13 +54,19 @@ class TelegramWorkflow:
         config = WorkflowConfig.load(get_config_path(), home)
         if not config.enabled:
             return None
-        return cls(
+        controller = cls(
             config=config,
             store=WorkflowStore(config.database_path),
             github=GitHubClient(),
             planner=TaskPlanner(),
             bot_getter=lambda: adapter._bot,
         )
+        from workflow.service import WorkflowService
+
+        controller.service = WorkflowService(
+            config, controller.store, notify=controller.notify_task
+        )
+        return controller
 
     async def handle_command(self, update: Any) -> bool:
         message = _message(update)
@@ -75,13 +83,29 @@ class TelegramWorkflow:
     async def handle_text(self, update: Any) -> bool:
         user_id = _user_id(update)
         conversation = self._conversations.get(user_id)
-        if conversation is None or conversation.stage not in {"instruction", "editing"}:
+        if conversation is None or conversation.stage not in {
+            "instruction",
+            "editing",
+            "answer",
+        }:
             return False
         if not self._authorized(user_id):
             return True
         message = _message(update)
         instruction = str(getattr(message, "text", "") or "").strip()
-        if not instruction or conversation.project is None:
+        if not instruction:
+            return True
+
+        if conversation.stage == "answer" and conversation.task_id is not None:
+            if self.service is None:
+                await self._send(_chat_id(update), "Workflow service belum aktif.")
+                return True
+            task_id = conversation.task_id
+            conversation.stage = "idle"
+            await self.service.answer(task_id, instruction)
+            return True
+
+        if conversation.project is None:
             return True
 
         if conversation.stage == "editing" and conversation.task_id is not None:
@@ -171,6 +195,20 @@ class TelegramWorkflow:
                 chat_id,
                 f"Task #{task.id} masuk antrean posisi {task.queue_position}.",
             )
+            if self.service is not None:
+                self.service.start()
+        elif action == "pr" and task_id:
+            if self.service is None:
+                await self._send(chat_id, "Workflow service belum aktif.")
+            else:
+                await self.service.create_pr(task_id)
+        elif action == "answer" and task_id:
+            if conversation is None:
+                conversation = _Conversation(stage="answer")
+                self._conversations[user_id] = conversation
+            conversation.stage = "answer"
+            conversation.task_id = task_id
+            await self._send(chat_id, "Kirim jawaban untuk Claude Code.")
         elif action == "edit" and task_id:
             task = self.store.get_task(task_id)
             if task.state is not TaskState.AWAITING_APPROVAL:
@@ -193,6 +231,22 @@ class TelegramWorkflow:
         else:
             await self._send(chat_id, "Aksi workflow tidak dikenali.")
         return True
+
+    async def notify_task(
+        self,
+        task_id: int,
+        text: str,
+        actions: tuple[tuple[str, str], ...] | list[tuple[str, str]],
+    ) -> None:
+        keyboard = [
+            [self._button(label, callback_data=callback_data)]
+            for label, callback_data in actions
+        ]
+        await self._send(
+            int(self.config.owner_telegram_id or 0),
+            f"Task #{task_id}\n\n{text}",
+            reply_markup=self._markup(keyboard) if keyboard else None,
+        )
 
     async def _show_repositories(self, user_id: int, chat_id: int, offset: int) -> None:
         repositories = tuple(

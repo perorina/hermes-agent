@@ -7,7 +7,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
-from workflow.models import AuditRecord, Project, TaskEvent, TaskState, WorkflowTask
+from workflow.models import (
+    AuditRecord,
+    Project,
+    TaskEvent,
+    TaskRuntime,
+    TaskState,
+    WorkflowTask,
+)
 
 
 class InvalidTaskTransition(ValueError):
@@ -185,6 +192,14 @@ class WorkflowStore:
                     action TEXT NOT NULL,
                     detail TEXT,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS task_runtime (
+                    task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+                    node_id TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    claude_session_id TEXT,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -622,6 +637,43 @@ class WorkflowStore:
                 """,
                 (task_id, repository, number, url, _utc_now()),
             )
+
+    def set_task_runtime(
+        self,
+        task_id: int,
+        node_id: str,
+        workspace: str,
+        claude_session_id: Optional[str] = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_runtime (
+                    task_id, node_id, workspace, claude_session_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    node_id = excluded.node_id,
+                    workspace = excluded.workspace,
+                    claude_session_id = excluded.claude_session_id,
+                    updated_at = excluded.updated_at
+                """,
+                (task_id, node_id, workspace, claude_session_id, _utc_now()),
+            )
+
+    def get_task_runtime(self, task_id: int) -> TaskRuntime:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM task_runtime WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        return TaskRuntime(
+            task_id=int(row["task_id"]),
+            node_id=row["node_id"],
+            workspace=row["workspace"],
+            claude_session_id=row["claude_session_id"],
+            updated_at=row["updated_at"],
+        )
 
     def record_webhook_delivery(self, delivery_id: str, event_name: str) -> bool:
         try:

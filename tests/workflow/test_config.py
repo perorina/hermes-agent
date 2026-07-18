@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -41,7 +41,9 @@ workflow:
   nodes:
     windows-pc:
       kind: windows
-      ssh_target: desktop-8haj6sl
+      ssh_target: karen@desktop-8haj6sl
+      identity_file: /opt/data/ssh/workflow_pc_ed25519
+      known_hosts_file: /opt/data/ssh/workflow_known_hosts
     vps:
       kind: linux
       ssh_target: host-vps
@@ -67,6 +69,15 @@ workflow:
     assert config.owner_telegram_id == 123456
     assert config.logs_dir == tmp_path / "workflow-logs"
     assert config.nodes["windows-pc"].kind == "windows"
+    assert config.nodes["windows-pc"].identity_file == "/opt/data/ssh/workflow_pc_ed25519"
+    assert config.worktree_roots["windows-pc"] == PureWindowsPath("F:/worktrees")
+    assert config.worktree_roots["vps"] == PurePosixPath("/opt/data/worktrees")
+    assert project.primary_clones["windows-pc"] == PureWindowsPath(
+        "F:/src/yamansari"
+    )
+    assert project.primary_clones["vps"] == PurePosixPath(
+        "/opt/data/repos/yamansari"
+    )
     assert project.name_with_owner == "perorina/yamansari-deployment"
     assert project.production is False
     assert project.retry_limit == 3

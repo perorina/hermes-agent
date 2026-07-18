@@ -66,3 +66,12 @@ class AuditRecord:
     action: str
     detail: Optional[str]
     created_at: str
+
+
+@dataclass(frozen=True)
+class TaskRuntime:
+    task_id: int
+    node_id: str
+    workspace: str
+    claude_session_id: Optional[str]
+    updated_at: str
