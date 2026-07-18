@@ -53,6 +53,34 @@ async def test_windows_ssh_uses_encoded_powershell_not_raw_input() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nodes_can_run_command_in_explicit_working_directory() -> None:
+    linux_calls = []
+    windows_calls = []
+
+    async def linux_transport(argv, timeout):
+        linux_calls.append(argv)
+        return CommandResult(0, "", "")
+
+    async def windows_transport(argv, timeout):
+        windows_calls.append(argv)
+        return CommandResult(0, "", "")
+
+    await LinuxNode("vps", "vps.tailnet", transport=linux_transport).run_in(
+        "/work trees/task", ["claude", "-p", "hello; world"]
+    )
+    await WindowsNode("pc", "pc.tailnet", transport=windows_transport).run_in(
+        "F:\\work trees\\task", ["claude", "-p", "hello; world"]
+    )
+
+    assert linux_calls[0][-1] == (
+        "sh -lc 'cd -- '\"'\"'/work trees/task'\"'\"' && exec claude -p '\"'\"'hello; world'\"'\"''"
+    )
+    windows_script = base64.b64decode(windows_calls[0][-1]).decode("utf-16-le")
+    assert "Set-Location -LiteralPath" in windows_script
+    assert "hello; world" not in windows_script
+
+
+@pytest.mark.asyncio
 async def test_windows_readiness_reports_manual_work_and_disk() -> None:
     async def transport(argv, timeout):
         return CommandResult(

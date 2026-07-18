@@ -119,6 +119,8 @@ class SSHNode:
 
 
 class LinuxNode(SSHNode):
+    kind = "linux"
+
     async def run(
         self, argv: Sequence[str], timeout: float = 60.0
     ) -> CommandResult:
@@ -128,6 +130,12 @@ class LinuxNode(SSHNode):
         return await self._transport(
             ["ssh", self.ssh_target, "--", remote_command], timeout
         )
+
+    async def run_in(
+        self, cwd: str, argv: Sequence[str], timeout: float = 60.0
+    ) -> CommandResult:
+        script = f"cd -- {shlex.quote(str(cwd))} && exec {shlex.join([str(item) for item in argv])}"
+        return await self.run(["sh", "-lc", script], timeout=timeout)
 
     async def readiness(self, minimum_free_disk_gb: int) -> NodeReadiness:
         process_names = ("claude", *self.ide_processes)
@@ -149,6 +157,8 @@ class LinuxNode(SSHNode):
 
 
 class WindowsNode(SSHNode):
+    kind = "windows"
+
     async def run(
         self, argv: Sequence[str], timeout: float = 60.0
     ) -> CommandResult:
@@ -160,6 +170,24 @@ class WindowsNode(SSHNode):
         script = (
             f"$json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}'));"
             "$argv=ConvertFrom-Json $json;"
+            "if($argv.Count -eq 1){& $argv[0]}else{& $argv[0] @($argv[1..($argv.Count-1)])};"
+            "exit $LASTEXITCODE"
+        )
+        return await self._run_powershell(script, timeout)
+
+    async def run_in(
+        self, cwd: str, argv: Sequence[str], timeout: float = 60.0
+    ) -> CommandResult:
+        if not argv:
+            raise ValueError("remote argv cannot be empty")
+        cwd_payload = base64.b64encode(str(cwd).encode("utf-8")).decode("ascii")
+        argv_payload = base64.b64encode(
+            json.dumps([str(item) for item in argv]).encode("utf-8")
+        ).decode("ascii")
+        script = (
+            f"$cwd=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{cwd_payload}'));"
+            f"$json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{argv_payload}'));"
+            "$argv=ConvertFrom-Json $json;Set-Location -LiteralPath $cwd;"
             "if($argv.Count -eq 1){& $argv[0]}else{& $argv[0] @($argv[1..($argv.Count-1)])};"
             "exit $LASTEXITCODE"
         )
