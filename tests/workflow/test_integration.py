@@ -30,7 +30,7 @@ class Markup:
 class Node:
     id = "pc"
 
-    async def readiness(self, minimum_free_disk_gb):
+    async def readiness(self, minimum_free_disk_gb, disk_path=None):
         return NodeReadiness(True, True, False, 80.0, ())
 
 

@@ -15,7 +15,11 @@ from workflow.store import WorkflowStore
 class ReadyNode:
     id = "pc"
 
-    async def readiness(self, minimum_free_disk_gb):
+    def __init__(self):
+        self.readiness_calls = []
+
+    async def readiness(self, minimum_free_disk_gb, disk_path=None):
+        self.readiness_calls.append((minimum_free_disk_gb, disk_path))
         return NodeReadiness(True, True, False, 80.0, ())
 
 
@@ -80,11 +84,12 @@ async def test_service_executes_queued_task_and_notifies_pr_action(tmp_path: Pat
     async def notify(task_id, text, actions):
         notifications.append((task_id, text, actions))
 
+    node = ReadyNode()
     service = WorkflowService(
         config,
         store,
         notify=notify,
-        nodes={"pc": ReadyNode()},
+        nodes={"pc": node},
         executor_factory=FakeExecutor,
     )
 
@@ -96,6 +101,7 @@ async def test_service_executes_queued_task_and_notifies_pr_action(tmp_path: Pat
     assert runtime.node_id == "pc"
     assert runtime.workspace == "/worktrees/1-task"
     assert runtime.claude_session_id == "session-1"
+    assert node.readiness_calls == [(10, "/worktrees")]
     assert notifications[-1][2] == (
         ("Buat PR", "wf:pr:1"),
         ("Lanjutkan task", "wf:continue:1"),

@@ -152,19 +152,25 @@ class LinuxNode(SSHNode):
         script = f"cd -- {shlex.quote(str(cwd))} && exec {shlex.join([str(item) for item in argv])}"
         return await self.run(["sh", "-lc", script], timeout=timeout)
 
-    async def readiness(self, minimum_free_disk_gb: int) -> NodeReadiness:
+    async def readiness(
+        self, minimum_free_disk_gb: int, disk_path: Optional[str] = None
+    ) -> NodeReadiness:
         process_names = ("claude", *self.ide_processes)
         encoded_names = base64.b64encode(
             json.dumps(process_names).encode("utf-8")
         ).decode("ascii")
+        encoded_path = base64.b64encode(
+            json.dumps(disk_path or "~").encode("utf-8")
+        ).decode("ascii")
         script = (
             "import base64,json,os,shutil,subprocess;"
             f"names=json.loads(base64.b64decode('{encoded_names}'));"
+            f"target=os.path.expanduser(json.loads(base64.b64decode('{encoded_path}')));"
             "running=[];"
             "[(running.append(name) if subprocess.run(['pgrep','-x',name],"
             "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0 else None) "
             "for name in names];"
-            "free=shutil.disk_usage(os.path.expanduser('~')).free/(1024**3);"
+            "free=shutil.disk_usage(target).free/(1024**3);"
             "print(json.dumps({'free_disk_gb':round(free,2),'manual_processes':running}))"
         )
         result = await self.run(["python3", "-c", script], timeout=15.0)
@@ -224,15 +230,27 @@ class WindowsNode(SSHNode):
             timeout,
         )
 
-    async def readiness(self, minimum_free_disk_gb: int) -> NodeReadiness:
+    async def readiness(
+        self, minimum_free_disk_gb: int, disk_path: Optional[str] = None
+    ) -> NodeReadiness:
         names = ("claude", *self.ide_processes)
         quoted_names = ",".join(f"'{name.replace(chr(39), '')}'" for name in names)
+        if disk_path:
+            encoded_path = base64.b64encode(disk_path.encode("utf-8")).decode("ascii")
+            disk_script = (
+                "$diskPath=[Text.Encoding]::UTF8.GetString("
+                f"[Convert]::FromBase64String('{encoded_path}'));"
+            )
+        else:
+            disk_script = "$diskPath=$env:SystemDrive;"
         script = (
-            f"$names=@({quoted_names});"
+            disk_script + f"$names=@({quoted_names});"
             "$running=@(Get-Process -ErrorAction SilentlyContinue | "
             "Where-Object {$names -contains $_.ProcessName} | "
             "Select-Object -ExpandProperty ProcessName -Unique);"
-            "$drive=Get-PSDrive -Name $env:SystemDrive.TrimEnd(':');"
+            "$qualifier=Split-Path -Qualifier $diskPath;"
+            "if(-not $qualifier){$qualifier=$env:SystemDrive};"
+            "$drive=Get-PSDrive -Name $qualifier.TrimEnd(':').TrimEnd('\\');"
             "@{free_disk_gb=[math]::Round($drive.Free/1GB,2);manual_processes=$running}"
             "|ConvertTo-Json -Compress"
         )

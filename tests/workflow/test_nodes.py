@@ -114,7 +114,10 @@ async def test_nodes_can_run_command_in_explicit_working_directory() -> None:
 
 @pytest.mark.asyncio
 async def test_windows_readiness_reports_manual_work_and_disk() -> None:
+    calls = []
+
     async def transport(argv, timeout):
+        calls.append(argv)
         return CommandResult(
             0,
             '{"free_disk_gb":84.5,"manual_processes":["claude","Code"]}',
@@ -128,13 +131,18 @@ async def test_windows_readiness_reports_manual_work_and_disk() -> None:
         ide_processes=("Code", "Cursor"),
     )
 
-    status = await node.readiness(minimum_free_disk_gb=10)
+    status = await node.readiness(
+        minimum_free_disk_gb=10, disk_path="F:\\masx\\agent-worktrees"
+    )
 
     assert status.online is True
     assert status.ready is False
     assert status.manual_busy is True
     assert status.free_disk_gb == 84.5
     assert status.manual_processes == ("claude", "Code")
+    script = base64.b64decode(calls[0][-1]).decode("utf-16-le")
+    assert "F:\\masx\\agent-worktrees" not in script
+    assert "Split-Path -Qualifier $diskPath" in script
 
 
 @pytest.mark.asyncio
@@ -147,7 +155,9 @@ async def test_linux_readiness_rejects_low_disk() -> None:
         )
 
     node = LinuxNode("vps", "vps.tailnet", transport=transport)
-    status = await node.readiness(minimum_free_disk_gb=10)
+    status = await node.readiness(
+        minimum_free_disk_gb=10, disk_path="/data/worktrees"
+    )
 
     assert status.online is True
     assert status.ready is False

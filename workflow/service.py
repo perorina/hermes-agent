@@ -50,7 +50,11 @@ class WorkflowService:
     async def _execute(self, task: WorkflowTask) -> None:
         project = self._project(task.project_id)
         node = self.nodes[project.preferred_node]
-        readiness = await node.readiness(project.minimum_free_disk_gb)
+        disk_root = self.config.worktree_roots.get(node.id)
+        readiness = await node.readiness(
+            project.minimum_free_disk_gb,
+            str(disk_root) if disk_root is not None else None,
+        )
         if not readiness.ready:
             reason = readiness.reason or "preferred node is not ready"
             self.store.transition_task(
