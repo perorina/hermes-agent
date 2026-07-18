@@ -132,6 +132,12 @@ class WorkflowStore:
                     acquired_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS global_locks (
+                    name TEXT PRIMARY KEY,
+                    task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id),
+                    acquired_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS task_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id INTEGER NOT NULL REFERENCES tasks(id),
@@ -409,6 +415,24 @@ class WorkflowStore:
                 (project_id, task_id),
             )
 
+    def acquire_global_lock(self, name: str, task_id: int) -> bool:
+        try:
+            with self._transaction() as conn:
+                conn.execute(
+                    "INSERT INTO global_locks (name, task_id, acquired_at) VALUES (?, ?, ?)",
+                    (name, task_id, _utc_now()),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def release_global_lock(self, name: str, task_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM global_locks WHERE name = ? AND task_id = ?",
+                (name, task_id),
+            )
+
     def recover_interrupted_tasks(self) -> list[int]:
         state_values = tuple(state.value for state in _INTERRUPTED_STATES)
         placeholders = ",".join("?" for _ in state_values)
@@ -426,6 +450,7 @@ class WorkflowStore:
                     (TaskState.FAILED.value, now, task_id),
                 )
                 conn.execute("DELETE FROM project_locks WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM global_locks WHERE task_id = ?", (task_id,))
                 self._insert_event(
                     conn,
                     task_id,

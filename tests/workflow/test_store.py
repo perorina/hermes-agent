@@ -124,6 +124,16 @@ def test_project_lock_is_unique_and_releasable(store: WorkflowStore) -> None:
     assert store.acquire_project_lock("yamansari", second.id) is True
 
 
+def test_global_lock_allows_only_one_claude_task(store: WorkflowStore) -> None:
+    first = store.create_task("yamansari", "First", "Proposal", "agent/first")
+    second = store.create_task("yamansari", "Second", "Proposal", "agent/second")
+
+    assert store.acquire_global_lock("claude", first.id) is True
+    assert store.acquire_global_lock("claude", second.id) is False
+    store.release_global_lock("claude", first.id)
+    assert store.acquire_global_lock("claude", second.id) is True
+
+
 def test_restart_marks_active_tasks_failed_and_releases_locks(
     store: WorkflowStore,
 ) -> None:
@@ -138,6 +148,7 @@ def test_restart_marks_active_tasks_failed_and_releases_locks(
     assert store.get_task(task.id).state is TaskState.FAILED
     replacement = store.create_task("yamansari", "Next", "Proposal", "agent/next")
     assert store.acquire_project_lock("yamansari", replacement.id) is True
+    assert store.acquire_global_lock("claude", replacement.id) is True
 
 
 def test_handoffs_survive_and_backup_is_consistent(
