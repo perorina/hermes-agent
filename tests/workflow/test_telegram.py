@@ -223,3 +223,14 @@ async def test_adapter_stops_workflow_runner_on_disconnect() -> None:
     await adapter.disconnect()
 
     service.stop.assert_awaited_once_with()
+
+
+def test_workflow_command_is_kept_in_capped_telegram_menu() -> None:
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._workflow = object()
+
+    commands = adapter._with_workflow_menu_command(
+        [("help", "Help"), ("status", "Status")], max_commands=2
+    )
+
+    assert commands == [("workflow", "Kelola repository workflow"), ("help", "Help")]

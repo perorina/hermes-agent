@@ -502,6 +502,14 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.exception("[Telegram] Failed to initialize repository workflow")
             return None
 
+    def _with_workflow_menu_command(self, commands, max_commands):
+        if self._workflow is None:
+            return commands
+        return [
+            ("workflow", "Kelola repository workflow"),
+            *(command for command in commands if command[0] != "workflow"),
+        ][:max_commands]
+
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -2779,6 +2787,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # platforms.telegram.extra.command_menu.
                 max_commands = telegram_menu_max_commands()
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
+                menu_commands = self._with_workflow_menu_command(menu_commands, max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -6709,7 +6718,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
+                max_commands = telegram_menu_max_commands()
+                menu_commands, _ = telegram_menu_commands(max_commands=max_commands)
+                menu_commands = self._with_workflow_menu_command(menu_commands, max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
