@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -220,6 +221,110 @@ class WorkflowStore:
                 TaskState.AWAITING_APPROVAL,
                 "workflow",
                 None,
+                now,
+            )
+        return self.get_task(task_id)
+
+    def create_draft(self, project_id: str, instruction: str) -> WorkflowTask:
+        now = _utc_now()
+        temporary_branch = f"draft/{uuid.uuid4().hex}"
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO tasks (
+                    project_id, instruction, proposal, branch, state,
+                    queue_position, created_at, updated_at
+                ) VALUES (?, ?, '', ?, ?, NULL, ?, ?)
+                """,
+                (
+                    project_id,
+                    instruction,
+                    temporary_branch,
+                    TaskState.CREATED.value,
+                    now,
+                    now,
+                ),
+            )
+            task_id = int(cursor.lastrowid)
+            self._insert_event(
+                conn, task_id, None, TaskState.CREATED, "workflow", None, now
+            )
+        return self.get_task(task_id)
+
+    def submit_proposal(
+        self,
+        task_id: int,
+        instruction: str,
+        proposal: str,
+        branch: str,
+        actor: str,
+    ) -> WorkflowTask:
+        with self._transaction() as conn:
+            row = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            current = TaskState(row["state"])
+            self._validate_transition(current, TaskState.AWAITING_APPROVAL)
+            now = _utc_now()
+            conn.execute(
+                """
+                UPDATE tasks
+                SET instruction = ?, proposal = ?, branch = ?, state = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    instruction,
+                    proposal,
+                    branch,
+                    TaskState.AWAITING_APPROVAL.value,
+                    now,
+                    task_id,
+                ),
+            )
+            self._insert_event(
+                conn,
+                task_id,
+                current,
+                TaskState.AWAITING_APPROVAL,
+                actor,
+                None,
+                now,
+            )
+        return self.get_task(task_id)
+
+    def revise_proposal(
+        self,
+        task_id: int,
+        instruction: str,
+        proposal: str,
+        branch: str,
+        actor: str,
+    ) -> WorkflowTask:
+        with self._transaction() as conn:
+            row = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            current = TaskState(row["state"])
+            if current is not TaskState.AWAITING_APPROVAL:
+                raise InvalidTaskTransition(
+                    f"cannot revise proposal while task is {current.value}"
+                )
+            now = _utc_now()
+            conn.execute(
+                """
+                UPDATE tasks
+                SET instruction = ?, proposal = ?, branch = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (instruction, proposal, branch, now, task_id),
+            )
+            self._insert_event(
+                conn,
+                task_id,
+                current,
+                current,
+                actor,
+                "proposal revised",
                 now,
             )
         return self.get_task(task_id)

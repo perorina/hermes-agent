@@ -75,6 +75,33 @@ def test_task_transitions_are_validated_and_audited(store: WorkflowStore) -> Non
         store.transition_task(task.id, TaskState.COMPLETED, actor="runner")
 
 
+def test_draft_can_be_submitted_and_revised_before_approval(
+    store: WorkflowStore,
+) -> None:
+    draft = store.create_draft("yamansari", "Initial request")
+
+    assert draft.state is TaskState.CREATED
+    submitted = store.submit_proposal(
+        draft.id,
+        instruction="Initial request",
+        proposal="Initial plan",
+        branch=f"agent/hermes/{draft.id}-initial-request",
+        actor="telegram:123",
+    )
+    revised = store.revise_proposal(
+        draft.id,
+        instruction="Revised request",
+        proposal="Revised plan",
+        branch=f"agent/hermes/{draft.id}-revised-request",
+        actor="telegram:123",
+    )
+
+    assert submitted.state is TaskState.AWAITING_APPROVAL
+    assert revised.instruction == "Revised request"
+    assert revised.proposal == "Revised plan"
+    assert revised.branch.endswith("revised-request")
+
+
 def test_approved_tasks_keep_fifo_order(store: WorkflowStore) -> None:
     first = store.create_task("yamansari", "First", "First proposal", "agent/first")
     second = store.create_task("yamansari", "Second", "Second proposal", "agent/second")

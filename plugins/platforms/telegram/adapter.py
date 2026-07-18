@@ -491,6 +491,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        self._workflow = self._load_workflow_controller()
+
+    def _load_workflow_controller(self):
+        try:
+            from workflow.telegram import TelegramWorkflow
+
+            return TelegramWorkflow.from_hermes_config(self)
+        except Exception:
+            logger.exception("[Telegram] Failed to initialize repository workflow")
+            return None
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -4608,6 +4618,20 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        if data.startswith("wf:") and self._workflow is not None:
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="You are not authorized for this workflow.")
+                return
+            await self._workflow.handle_callback(update)
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -6718,6 +6742,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        if self._workflow is not None and await self._workflow.handle_text(update):
+            return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
@@ -6743,6 +6769,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        if self._workflow is not None and await self._workflow.handle_command(update):
             return
         await self._ensure_forum_commands(msg)
 
