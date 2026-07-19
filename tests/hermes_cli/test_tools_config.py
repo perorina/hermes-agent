@@ -24,6 +24,7 @@ from hermes_cli.tools_config import (
     TOOL_CATEGORIES,
     gui_toolset_label,
     _visible_providers,
+    provider_readiness_status,
     tools_command,
 )
 
@@ -241,6 +242,80 @@ def test_get_platform_tools_x_search_auto_enabled_when_xai_oauth_present(monkeyp
     for plat in ("cli", "cron", "telegram"):
         enabled = _get_platform_tools({}, plat)
         assert "x_search" in enabled, f"x_search missing for {plat}"
+
+
+# ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
+# are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
+# via the platform's native composite. The composite ``hermes-discord``
+# contains both ``discord`` and ``discord_admin`` tools, so configuring it is
+# an explicit opt-in that should survive the default-off strip. ───────────────
+
+
+def test_discord_composite_only_enables_discord_toolsets():
+    """Layer 1: ``platform_toolsets.discord: [hermes-discord]`` is an explicit
+    opt-in to the full Discord bundle (which includes the ``discord`` and
+    ``discord_admin`` tools). They must not be silently stripped."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled, "discord toolset missing from hermes-discord composite"
+    assert "discord_admin" in enabled, "discord_admin toolset missing from composite"
+
+
+def test_discord_composite_plus_configurable_enables_discord_toolsets():
+    """Layer 2: mixing the composite with a configurable key (e.g. spotify)
+    still opts into the Discord toolsets carried by the composite."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord", "spotify"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
+def test_discord_composite_plus_partial_explicit_enables_sibling():
+    """Layer 3: ``[hermes-discord, discord]`` lists discord explicitly but
+    discord_admin arrives only via the composite. Both must survive."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord", "discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
+def test_discord_unconfigured_keeps_discord_toolsets_off():
+    """Layer 4 (guard): an unconfigured discord platform keeps the platform
+    toolsets OFF by default — explicit configuration is required to opt in."""
+    enabled = _get_platform_tools({}, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_empty_list_keeps_discord_toolsets_off():
+    """Layer 4 (guard): an explicit empty list means 'nothing' — the Discord
+    toolsets must not be auto-added even though the fix keys off explicit
+    configuration."""
+    config = {"platform_toolsets": {"discord": []}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolsets_do_not_leak_to_other_platforms():
+    """Layer 4 (guard): discord/discord_admin are platform-restricted — they
+    must never appear on a non-discord platform even when that platform is
+    explicitly configured."""
+    config = {"platform_toolsets": {"telegram": ["hermes-telegram", "discord"]}}
+    enabled = _get_platform_tools(config, "telegram")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_explicit_workaround_still_works():
+    """Regression guard: the documented workaround of listing toolsets
+    explicitly must keep working after the fix."""
+    config = {
+        "platform_toolsets": {"discord": ["hermes-discord", "discord", "discord_admin"]}
+    }
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
 
 
 def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):
@@ -1756,3 +1831,118 @@ def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolset
     assert "todo" not in config["platform_toolsets"]["cli"]
     # disabled_toolsets is untouched by a disable action.
     assert config["agent"]["disabled_toolsets"] == ["memory"]
+
+
+# ─── provider_readiness_status ────────────────────────────────────────────────
+#
+# Server-side truth for the GUI "Ready" pill (issue: Capabilities tab showed
+# Ready for every zero-env-var provider row, including logged-out Nous
+# Subscription rows and never-installed KittenTTS/Piper).
+
+
+def _fake_features(*, logged_in: bool, paid: bool = True):
+    account = (
+        NousPortalAccountInfo(
+            logged_in=True, source="jwt", fresh=False, paid_service_access=paid
+        )
+        if logged_in
+        else NousPortalAccountInfo(
+            logged_in=False, source="none", fresh=False, paid_service_access=None
+        )
+    )
+    return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
+
+
+def test_provider_readiness_env_vars_gate_keys(monkeypatch):
+    provider = {"name": "ElevenLabs", "env_vars": [{"key": "ELEVENLABS_API_KEY"}]}
+
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda key: None)
+    assert provider_readiness_status(provider, {}) == "needs_keys"
+
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda key: "sk-x")
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_keyless_ungated_row_is_ready():
+    # Edge TTS: no env vars, no post_setup, no nous auth → genuinely free.
+    provider = {"name": "Microsoft Edge TTS", "env_vars": [], "tts_provider": "edge"}
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_managed_nous_row_needs_auth_when_logged_out():
+    provider = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "tts",
+    }
+    status = provider_readiness_status(
+        provider, {}, features=_fake_features(logged_in=False)
+    )
+    assert status == "needs_auth"
+
+
+def test_provider_readiness_managed_nous_row_ready_when_entitled():
+    provider = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "tts",
+    }
+    status = provider_readiness_status(
+        provider, {}, features=_fake_features(logged_in=True, paid=True)
+    )
+    assert status == "ready"
+
+
+def test_provider_readiness_managed_nous_row_needs_auth_when_unentitled():
+    # Logged in but unpaid and no free tool pool → still gated.
+    provider = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "video_gen",
+    }
+    status = provider_readiness_status(
+        provider, {}, features=_fake_features(logged_in=True, paid=False)
+    )
+    assert status == "needs_auth"
+
+
+def test_provider_readiness_xai_grok_row_tracks_credentials(monkeypatch):
+    provider = {"name": "xAI TTS", "env_vars": [], "post_setup": "xai_grok"}
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_auth"
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_local_install_rows_track_module_presence(monkeypatch):
+    kitten = {"name": "KittenTTS", "env_vars": [], "post_setup": "kittentts"}
+    piper = {"name": "Piper", "env_vars": [], "post_setup": "piper"}
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._module_installed", lambda name: False
+    )
+    assert provider_readiness_status(kitten, {}) == "needs_setup"
+    assert provider_readiness_status(piper, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._module_installed", lambda name: True
+    )
+    assert provider_readiness_status(kitten, {}) == "ready"
+    assert provider_readiness_status(piper, {}) == "ready"
+
+
+def test_provider_readiness_unknown_post_setup_falls_back_to_is_active():
+    # A post_setup hook with no registered installed-check: selecting the row
+    # runs the hook, so is_active is the completed-setup signal.
+    provider = {"name": "Mystery", "env_vars": [], "post_setup": "mystery_hook"}
+    assert provider_readiness_status(provider, {}, is_active=True) == "ready"
+    assert provider_readiness_status(provider, {}, is_active=False) == "needs_setup"
